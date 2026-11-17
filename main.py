@@ -116,7 +116,7 @@ def sign(order, url, user, password):
             login_result = login.json()
             if not response_ok(login_result):
                 message = str(login_result.get('msg', '')).lower()
-                if any(word in message for word in ('验证码', 'captcha', 'geetest', '验证失败', '人机')):
+                if any(word in message for word in ('验证码', 'captcha', 'geetest', '验证失败', '验证结果', '人机')):
                     match = re.search(r'''(?:captchaId|captcha_id)\s*['"]?\s*[:=]\s*['"]([a-f0-9]{32})['"]''', html)
                     captcha_id = match.group(1) if match else CAPTCHA_ID
                     captcha = solve_captcha(captcha_id)
