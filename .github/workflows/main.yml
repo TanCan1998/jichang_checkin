@@ -1,58 +1,68 @@
-name: "Common airport Checkin"
+name: Common airport Checkin
 
 on:
   schedule:
-    - cron: "10 16 * * *"  # scheduled at 00:10 (UTC+8) everyday
+    - cron: '10 16 * * *' # 每天北京时间 00:10
   workflow_dispatch:
+  push:
+    paths: ['.github/workflows/main.yml', 'main.py', 'requirements.txt', 'tests/**']
 
-env:
-  RUN_ENV: 'prod'
+permissions:
+  contents: read
+
+concurrency:
+  group: airport-checkin-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    # if: github.ref == 'refs/heads/master'
-
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
     steps:
-      - name: Checkout master
-        uses: actions/checkout@v5
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
-          # ref: master
-
-      - name: Set up python
-        uses: actions/setup-python@v6
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: 3.10.16
-
-      - name: Random sleep
-        if: github.event_name == 'schedule'
-        run: sleep $(shuf -i 10-60 -n 1)
-
+          python-version: '3.15.2'
+          cache: pip
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      - name: Fetch latest geeked solver
+          python -m pip install --upgrade pip==26.3
+          python -m pip install -r requirements.txt
+          python -m pip check
+      - name: Test check-in behavior
+        run: python -m unittest discover -s tests -v
+      - name: Checkout pinned captcha solver
+        if: github.event_name != 'push'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: xKiian/GeekedTest
+          ref: d4e8e7562cfeab8319154a6af6538443cc47bfd9
+          path: vendor/GeekedTest
+          persist-credentials: false
+      - name: Prepare AI captcha solver
+        if: github.event_name != 'push'
         run: |
-          git clone https://github.com/xKiian/GeekedTest.git temp_geeked
-          python -c "
-          with open('temp_geeked/geeked/sign.py', 'r', encoding='utf-8') as f:
-              code = f.read()
-          code = code.replace('from geeked.slide import SlideSolver', 'SlideSolver = None')
-          code = code.replace('from geeked.gobang import GobangSolver', 'GobangSolver = None')
-          code = code.replace('from geeked.icon import IconSolver', 'IconSolver = None')
-          with open('temp_geeked/geeked/sign.py', 'w', encoding='utf-8') as f:
-              f.write(code)
-          "
-          mv temp_geeked/geeked ./geeked
-          rm -rf temp_geeked
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('vendor/GeekedTest/geeked/sign.py')
+          code = path.read_text(encoding='utf-8')
+          # 本项目仅使用 AI 验证模式，避免加载未使用的图像模型依赖。
+          for module, name in [('slide', 'SlideSolver'), ('gobang', 'GobangSolver'), ('icon', 'IconSolver')]:
+              original = f'from geeked.{module} import {name}'
+              assert original in code, f'上游接口变更：{original}'
+              code = code.replace(original, f'{name} = None')
+          path.write_text(code, encoding='utf-8')
+          PY
       - name: Run sign
+        if: github.event_name != 'push'
         env:
+          PYTHONPATH: vendor/GeekedTest
+          PYTHONUNBUFFERED: '1'
           URL: ${{ secrets.URL }}
           SCKEY: ${{ secrets.SCKEY }}
-          EMAIL: ${{ secrets.EMAIL }}
-          PASSWD: ${{ secrets.PASSWD }}
           CONFIG: ${{ secrets.CONFIG }}
-        run: |
-          python3 ./main.py
+        run: python main.py
