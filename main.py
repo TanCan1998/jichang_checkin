@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 from urllib.parse import urlsplit
@@ -21,13 +22,13 @@ def load_config():
     return url, list(zip(lines[::2], lines[1::2]))
 
 
-def solve_captcha():
+def solve_captcha(captcha_id=CAPTCHA_ID):
     from geeked import Geeked
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             print(f'验证码求解尝试 {attempt}/{MAX_RETRIES}')
-            result = Geeked(CAPTCHA_ID, 'ai', timeout=TIMEOUT).solve()
+            result = Geeked(captcha_id, 'ai', timeout=TIMEOUT).solve()
             if not all(result.get(key) for key in ('lot_number', 'captcha_output', 'pass_token', 'gen_time')):
                 raise ValueError('验证码返回字段不完整')
             return result
@@ -64,15 +65,26 @@ def sign(order, url, user, password):
     print(f'===账号 {order} 开始签到===')
     success = False
     try:
-        captcha = solve_captcha()
         data = {'email': user.strip(), 'passwd': password}
-        data.update({f'captcha_result[{key}]': captcha[key]
-                     for key in ('lot_number', 'captcha_output', 'pass_token', 'gen_time')})
         with requests.Session() as session:
             session.headers.update({'origin': url, 'user-agent': 'Mozilla/5.0 Chrome/124.0.0.0 Safari/537.36'})
             login = session.post(f'{url}/auth/login', data=data, timeout=TIMEOUT)
             login.raise_for_status()
-            if login.json().get('ret') != 1:
+            login_result = login.json()
+            if login_result.get('ret') != 1:
+                message = str(login_result.get('msg', '')).lower()
+                if any(word in message for word in ('验证码', 'captcha', 'geetest', '验证失败')):
+                    page = session.get(f'{url}/auth/login', timeout=TIMEOUT)
+                    page.raise_for_status()
+                    match = re.search(r'''(?:captchaId|captcha_id)\s*['"]?\s*[:=]\s*['"]([a-f0-9]{32})['"]''', page.text)
+                    captcha_id = match.group(1) if match else CAPTCHA_ID
+                    captcha = solve_captcha(captcha_id)
+                    data.update({f'captcha_result[{key}]': captcha[key]
+                                 for key in ('lot_number', 'captcha_output', 'pass_token', 'gen_time')})
+                    login = session.post(f'{url}/auth/login', data=data, timeout=TIMEOUT)
+                    login.raise_for_status()
+                    login_result = login.json()
+            if login_result.get('ret') != 1:
                 raise RuntimeError('登录失败，请检查账号密码或验证码')
             response = session.post(f'{url}/user/checkin', timeout=TIMEOUT)
             response.raise_for_status()

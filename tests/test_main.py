@@ -32,11 +32,11 @@ class CheckinTests(unittest.TestCase):
         with patch.object(main, 'solve_captcha', return_value=captcha), patch.object(main.requests, 'Session', return_value=session), patch.object(main, 'notify'):
             return main.sign(1, 'https://example.com', 'a', 'p'), session
 
-    def test_success_posts_captcha_and_uses_timeout(self):
+    def test_success_without_captcha_uses_timeout(self):
         success, session = self.run_sign({'ret': 1}, {'ret': 1, 'msg': '成功'})
         self.assertTrue(success)
         self.assertEqual(session.post.call_count, 2)
-        self.assertIn('captcha_result[pass_token]', session.post.call_args_list[0].kwargs['data'])
+        self.assertEqual(session.post.call_args_list[0].kwargs['data']['email'], 'a')
         self.assertEqual(session.post.call_args.kwargs['timeout'], 30)
 
     def test_already_signed_counts_as_success(self):
