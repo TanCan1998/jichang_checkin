@@ -103,6 +103,8 @@ def sign(order, url, user, password):
             login_result = login.json()
             if not response_ok(login_result):
                 print(f'登录页长度：{len(page.text)}，脚本数量：{len(form.scripts)}')
+                preview = re.sub(r'[a-zA-Z0-9+/=_-]{32,}', '[隐藏编码]', page.text[:1800])
+                print('登录页开头：' + preview.replace('\n', ' '))
                 for src in form.scripts[-8:]:
                     script_url = urljoin(page.url, src)
                     if urlsplit(script_url).netloc != urlsplit(page.url).netloc:
