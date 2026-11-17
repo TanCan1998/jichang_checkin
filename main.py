@@ -110,6 +110,11 @@ def sign(order, url, user, password):
                     login.raise_for_status()
                     login_result = login.json()
             if not response_ok(login_result):
+                for line in page.text.splitlines():
+                    if any(word in line.lower() for word in ('flow', 'csrf', 'captcha', 'token', 'url:', 'email:', 'passwd:')):
+                        line = re.sub(r'''(['"])[^'"\n]{24,}\1''', "'[隐藏长字符串]'", line)
+                        line = re.sub(r'https?://[^\s\"\'<>]+', '[隐藏地址]', line)
+                        print('登录页面结构：' + line.strip()[:300])
                 message = str(login_result.get('msg', '无错误说明'))
                 for value in (user, password, url):
                     if value:
