@@ -44,6 +44,10 @@ def already_checked_in(message):
     return any(text in message for text in ('已经签到', '已签到', '已经签过', '已签过'))
 
 
+def response_ok(result):
+    return str(result.get('ret', '')).lower() in ('1', 'true')
+
+
 def notify(content):
     key = os.environ.get('SCKEY', '').strip()
     if not key:
@@ -71,9 +75,9 @@ def sign(order, url, user, password):
             login = session.post(f'{url}/auth/login', data=data, timeout=TIMEOUT)
             login.raise_for_status()
             login_result = login.json()
-            if login_result.get('ret') != 1:
+            if not response_ok(login_result):
                 message = str(login_result.get('msg', '')).lower()
-                if any(word in message for word in ('验证码', 'captcha', 'geetest', '验证失败')):
+                if any(word in message for word in ('验证码', 'captcha', 'geetest', '验证失败', '人机')):
                     page = session.get(f'{url}/auth/login', timeout=TIMEOUT)
                     page.raise_for_status()
                     match = re.search(r'''(?:captchaId|captcha_id)\s*['"]?\s*[:=]\s*['"]([a-f0-9]{32})['"]''', page.text)
@@ -84,13 +88,18 @@ def sign(order, url, user, password):
                     login = session.post(f'{url}/auth/login', data=data, timeout=TIMEOUT)
                     login.raise_for_status()
                     login_result = login.json()
-            if login_result.get('ret') != 1:
+            if not response_ok(login_result):
+                message = str(login_result.get('msg', '无错误说明'))
+                for value in (user, password, url):
+                    if value:
+                        message = message.replace(value, '[隐藏]')
+                print('登录接口提示：' + message.replace('\n', ' ').replace('\r', ' ')[:200])
                 raise RuntimeError('登录失败，请检查账号密码或验证码')
             response = session.post(f'{url}/user/checkin', timeout=TIMEOUT)
             response.raise_for_status()
             result = response.json()
             message = str(result.get('msg', ''))
-            success = result.get('ret') == 1 or already_checked_in(message)
+            success = response_ok(result) or already_checked_in(message)
             # 不打印服务端原始内容，防止公开日志包含账号、令牌等信息。
             content = '今日已签到' if already_checked_in(message) else ('签到成功' if success else '签到接口返回失败')
     except Exception as exc:

@@ -43,6 +43,31 @@ class CheckinTests(unittest.TestCase):
         success, _ = self.run_sign({'ret': 1}, {'ret': 0, 'msg': '您今天已经签到过了'})
         self.assertTrue(success)
 
+    def test_captcha_challenge_uses_current_page_id(self):
+        session = MagicMock()
+        session.__enter__.return_value = session
+        session.post.side_effect = [
+            MagicMock(json=lambda: {'ret': 0, 'msg': '请完成验证码'}),
+            MagicMock(json=lambda: {'ret': 1}),
+            MagicMock(json=lambda: {'ret': 1}),
+        ]
+        session.get.return_value.text = 'captchaId: "' + 'a' * 32 + '"'
+        captcha = dict.fromkeys(('lot_number', 'captcha_output', 'pass_token', 'gen_time'), 'test')
+        with patch.object(main.requests, 'Session', return_value=session), patch.object(main, 'solve_captcha', return_value=captcha) as solve, patch.object(main, 'notify'):
+            self.assertTrue(main.sign(1, 'https://example.com', 'a', 'p'))
+            solve.assert_called_once_with('a' * 32)
+            self.assertEqual(session.post.call_count, 3)
+            self.assertIn('captcha_result[pass_token]', session.post.call_args_list[1].kwargs['data'])
+
+    def test_captcha_failure_stops_login_retry(self):
+        session = MagicMock()
+        session.__enter__.return_value = session
+        session.post.return_value.json.return_value = {'ret': 0, 'msg': '验证码失败'}
+        session.get.return_value.text = ''
+        with patch.object(main.requests, 'Session', return_value=session), patch.object(main, 'solve_captcha', side_effect=RuntimeError()), patch.object(main, 'notify'):
+            self.assertFalse(main.sign(1, 'https://example.com', 'a', 'p'))
+            self.assertEqual(session.post.call_count, 1)
+
     def test_login_failure_does_not_attempt_checkin(self):
         success, session = self.run_sign({'ret': 0})
         self.assertFalse(success)
