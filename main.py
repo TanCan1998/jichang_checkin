@@ -1,4 +1,5 @@
 import os
+import base64
 import re
 import sys
 import time
@@ -10,6 +11,15 @@ import requests
 CAPTCHA_ID = 'cc96d05ba8b60f9112f76e18526fcb73'
 MAX_RETRIES = 3
 TIMEOUT = 30
+
+
+def decode_login_html(html):
+    for _ in range(3):
+        match = re.search(r'''\boriginBody\s*=\s*['"]([A-Za-z0-9+/=]+)['"]''', html)
+        if not match:
+            break
+        html = base64.b64decode(match.group(1)).decode('utf-8')
+    return html
 
 
 class LoginPage(HTMLParser):
@@ -93,7 +103,8 @@ def sign(order, url, user, password):
             session.headers.update({'origin': url, 'referer': f'{url}/auth/login', 'user-agent': 'Mozilla/5.0 Chrome/124.0.0.0 Safari/537.36'})
             page = session.get(f'{url}/auth/login', timeout=TIMEOUT)
             page.raise_for_status()
-            form = LoginPage(page.text)
+            html = decode_login_html(page.text)
+            form = LoginPage(html)
             data = form.fields | data
             if form.csrf:
                 session.headers['X-CSRF-TOKEN'] = form.csrf
@@ -103,8 +114,6 @@ def sign(order, url, user, password):
             login_result = login.json()
             if not response_ok(login_result):
                 print(f'登录页长度：{len(page.text)}，脚本数量：{len(form.scripts)}')
-                preview = re.sub(r'[a-zA-Z0-9+/=_-]{32,}', '[隐藏编码]', page.text[:1800])
-                print('登录页开头：' + preview.replace('\n', ' '))
                 for src in form.scripts[-8:]:
                     script_url = urljoin(page.url, src)
                     if urlsplit(script_url).netloc != urlsplit(page.url).netloc:
@@ -117,7 +126,7 @@ def sign(order, url, user, password):
                         print('登录脚本结构：' + snippet.replace('\n', ' '))
                 message = str(login_result.get('msg', '')).lower()
                 if any(word in message for word in ('验证码', 'captcha', 'geetest', '验证失败', '人机')):
-                    match = re.search(r'''(?:captchaId|captcha_id)\s*['"]?\s*[:=]\s*['"]([a-f0-9]{32})['"]''', page.text)
+                    match = re.search(r'''(?:captchaId|captcha_id)\s*['"]?\s*[:=]\s*['"]([a-f0-9]{32})['"]''', html)
                     captcha_id = match.group(1) if match else CAPTCHA_ID
                     captcha = solve_captcha(captcha_id)
                     data.update({f'captcha_result[{key}]': captcha[key]
@@ -126,7 +135,7 @@ def sign(order, url, user, password):
                     login.raise_for_status()
                     login_result = login.json()
             if not response_ok(login_result):
-                for line in page.text.splitlines():
+                for line in html.splitlines():
                     if any(word in line.lower() for word in ('flow', 'csrf', 'captcha', 'token', 'url:', 'email:', 'passwd:')):
                         line = re.sub(r'''(['"])[^'"\n]{24,}\1''', "'[隐藏长字符串]'", line)
                         line = re.sub(r'https?://[^\s\"\'<>]+', '[隐藏地址]', line)
