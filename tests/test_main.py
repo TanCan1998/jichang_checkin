@@ -24,6 +24,7 @@ class CheckinTests(unittest.TestCase):
     def run_sign(self, login, result=None, error=None):
         session = MagicMock()
         session.__enter__.return_value = session
+        session.get.return_value.text = ''
         if error:
             session.post.side_effect = error
         else:

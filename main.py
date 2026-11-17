@@ -3,12 +3,28 @@ import re
 import sys
 import time
 from urllib.parse import urlsplit
+from html.parser import HTMLParser
 
 import requests
 
 CAPTCHA_ID = 'cc96d05ba8b60f9112f76e18526fcb73'
 MAX_RETRIES = 3
 TIMEOUT = 30
+
+
+class LoginPage(HTMLParser):
+    def __init__(self, html):
+        super().__init__()
+        self.fields = {}
+        self.csrf = None
+        self.feed(html)
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == 'input' and attrs.get('type', '').lower() == 'hidden' and attrs.get('name'):
+            self.fields[attrs['name']] = attrs.get('value', '')
+        if tag == 'meta' and attrs.get('name') == 'csrf-token':
+            self.csrf = attrs.get('content')
 
 
 def load_config():
@@ -71,15 +87,20 @@ def sign(order, url, user, password):
     try:
         data = {'email': user.strip(), 'passwd': password}
         with requests.Session() as session:
-            session.headers.update({'origin': url, 'user-agent': 'Mozilla/5.0 Chrome/124.0.0.0 Safari/537.36'})
+            session.headers.update({'origin': url, 'referer': f'{url}/auth/login', 'user-agent': 'Mozilla/5.0 Chrome/124.0.0.0 Safari/537.36'})
+            page = session.get(f'{url}/auth/login', timeout=TIMEOUT)
+            page.raise_for_status()
+            form = LoginPage(page.text)
+            data = form.fields | data
+            if form.csrf:
+                session.headers['X-CSRF-TOKEN'] = form.csrf
+            print('登录初始化字段：' + ', '.join(form.fields))
             login = session.post(f'{url}/auth/login', data=data, timeout=TIMEOUT)
             login.raise_for_status()
             login_result = login.json()
             if not response_ok(login_result):
                 message = str(login_result.get('msg', '')).lower()
                 if any(word in message for word in ('验证码', 'captcha', 'geetest', '验证失败', '人机')):
-                    page = session.get(f'{url}/auth/login', timeout=TIMEOUT)
-                    page.raise_for_status()
                     match = re.search(r'''(?:captchaId|captcha_id)\s*['"]?\s*[:=]\s*['"]([a-f0-9]{32})['"]''', page.text)
                     captcha_id = match.group(1) if match else CAPTCHA_ID
                     captcha = solve_captcha(captcha_id)
