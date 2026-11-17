@@ -113,6 +113,10 @@ def sign(order, url, user, password):
             login.raise_for_status()
             login_result = login.json()
             if not response_ok(login_result):
+                for match in list(re.finditer(r'requestData|nonce|loginSession|loginChallenge|login_session|login_challenge', html))[:40]:
+                    snippet = html[max(0, match.start()-140):match.end()+240]
+                    snippet = re.sub(r'''(['"])[^'"\n]{24,}\1''', "'[隐藏长字符串]'", snippet)
+                    print('登录请求结构：' + snippet.replace('\n', ' '))
                 print(f'登录页长度：{len(page.text)}，脚本数量：{len(form.scripts)}')
                 for src in form.scripts[-8:]:
                     script_url = urljoin(page.url, src)
