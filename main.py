@@ -108,26 +108,13 @@ def sign(order, url, user, password):
             data = form.fields | data
             if form.csrf:
                 session.headers['X-CSRF-TOKEN'] = form.csrf
-            print('登录初始化字段：' + ', '.join(form.fields))
+            if 'buildLoginRequest' in html:
+                data.update({'host': urlsplit(url).netloc, 'phase': 'password',
+                             'pageLoadedAt': int(time.time() * 1000), 'remember_me': 'week'})
             login = session.post(f'{url}/auth/login', data=data, timeout=TIMEOUT)
             login.raise_for_status()
             login_result = login.json()
             if not response_ok(login_result):
-                for match in list(re.finditer(r'requestData|nonce|loginSession|loginChallenge|login_session|login_challenge', html))[:40]:
-                    snippet = html[max(0, match.start()-140):match.end()+240]
-                    snippet = re.sub(r'''(['"])[^'"\n]{24,}\1''', "'[隐藏长字符串]'", snippet)
-                    print('登录请求结构：' + snippet.replace('\n', ' '))
-                print(f'登录页长度：{len(page.text)}，脚本数量：{len(form.scripts)}')
-                for src in form.scripts[-8:]:
-                    script_url = urljoin(page.url, src)
-                    if urlsplit(script_url).netloc != urlsplit(page.url).netloc:
-                        continue
-                    script = session.get(script_url, timeout=TIMEOUT).text
-                    for match in list(re.finditer(r'flow|csrf|captcha|/auth/login|passwd', script, re.I))[:25]:
-                        snippet = script[max(0, match.start()-100):match.end()+150]
-                        snippet = re.sub(r'''(['"])[^'"\n]{24,}\1''', "'[隐藏长字符串]'", snippet)
-                        snippet = re.sub(r'https?://[^\s\"\'<>]+', '[隐藏地址]', snippet)
-                        print('登录脚本结构：' + snippet.replace('\n', ' '))
                 message = str(login_result.get('msg', '')).lower()
                 if any(word in message for word in ('验证码', 'captcha', 'geetest', '验证失败', '人机')):
                     match = re.search(r'''(?:captchaId|captcha_id)\s*['"]?\s*[:=]\s*['"]([a-f0-9]{32})['"]''', html)
@@ -139,11 +126,6 @@ def sign(order, url, user, password):
                     login.raise_for_status()
                     login_result = login.json()
             if not response_ok(login_result):
-                for line in html.splitlines():
-                    if any(word in line.lower() for word in ('flow', 'csrf', 'captcha', 'token', 'url:', 'email:', 'passwd:')):
-                        line = re.sub(r'''(['"])[^'"\n]{24,}\1''', "'[隐藏长字符串]'", line)
-                        line = re.sub(r'https?://[^\s\"\'<>]+', '[隐藏地址]', line)
-                        print('登录页面结构：' + line.strip()[:300])
                 message = str(login_result.get('msg', '无错误说明'))
                 for value in (user, password, url):
                     if value:
