@@ -24,7 +24,7 @@ class CheckinTests(unittest.TestCase):
                 session = MagicMock()
                 session.__enter__.return_value = session
                 session.post.return_value.json.return_value = result
-                with patch.object(main.requests, 'Session', return_value=session), patch.object(main, 'notify'):
+                with patch.object(main, 'create_cookie_session', return_value=session), patch.object(main, 'notify'):
                     self.assertEqual(main.sign_with_cookie(1, 'https://example.com', 'sid=test'), expected)
                     self.assertEqual(session.headers.update.call_args.args[0]['Cookie'], 'sid=test')
                     self.assertEqual(session.post.call_args.args[0], 'https://example.com/user/checkin')

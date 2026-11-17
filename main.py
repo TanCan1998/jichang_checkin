@@ -107,13 +107,20 @@ def check_in(session, url):
     return success, content
 
 
+def create_cookie_session():
+    from curl_cffi import requests as browser_requests
+    return browser_requests.Session(impersonate='chrome')
+
+
 def sign_with_cookie(order, url, cookie):
     try:
-        with requests.Session() as session:
+        with create_cookie_session() as session:
             session.headers.update({'Cookie': cookie, 'origin': url, 'referer': f'{url}/user'})
             success, content = check_in(session, url)
     except Exception as exc:
-        success, content = False, f'Cookie 签到失败：{type(exc).__name__}，请检查会话是否过期或网络是否正常'
+        status = getattr(getattr(exc, 'response', None), 'status_code', None)
+        detail = f'HTTP {status}' if status else type(exc).__name__
+        success, content = False, f'Cookie 签到失败：{detail}，请检查会话是否过期或网络是否正常'
     print(f'账号 {order}：{content}')
     notify(f'账号 {order}：{content}')
     return success
