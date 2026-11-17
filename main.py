@@ -2,7 +2,7 @@ import os
 import re
 import sys
 import time
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urljoin
 from html.parser import HTMLParser
 
 import requests
@@ -17,10 +17,13 @@ class LoginPage(HTMLParser):
         super().__init__()
         self.fields = {}
         self.csrf = None
+        self.scripts = []
         self.feed(html)
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        if tag == 'script' and attrs.get('src'):
+            self.scripts.append(attrs['src'])
         if tag == 'input' and attrs.get('type', '').lower() == 'hidden' and attrs.get('name'):
             self.fields[attrs['name']] = attrs.get('value', '')
         if tag == 'meta' and attrs.get('name') == 'csrf-token':
@@ -99,6 +102,17 @@ def sign(order, url, user, password):
             login.raise_for_status()
             login_result = login.json()
             if not response_ok(login_result):
+                print(f'登录页长度：{len(page.text)}，脚本数量：{len(form.scripts)}')
+                for src in form.scripts[-8:]:
+                    script_url = urljoin(page.url, src)
+                    if urlsplit(script_url).netloc != urlsplit(page.url).netloc:
+                        continue
+                    script = session.get(script_url, timeout=TIMEOUT).text
+                    for match in list(re.finditer(r'flow|csrf|captcha|/auth/login|passwd', script, re.I))[:25]:
+                        snippet = script[max(0, match.start()-100):match.end()+150]
+                        snippet = re.sub(r'''(['"])[^'"\n]{24,}\1''', "'[隐藏长字符串]'", snippet)
+                        snippet = re.sub(r'https?://[^\s\"\'<>]+', '[隐藏地址]', snippet)
+                        print('登录脚本结构：' + snippet.replace('\n', ' '))
                 message = str(login_result.get('msg', '')).lower()
                 if any(word in message for word in ('验证码', 'captcha', 'geetest', '验证失败', '人机')):
                     match = re.search(r'''(?:captchaId|captcha_id)\s*['"]?\s*[:=]\s*['"]([a-f0-9]{32})['"]''', page.text)
