@@ -3,7 +3,7 @@ import base64
 import re
 import sys
 import time
-from urllib.parse import urlsplit, urljoin
+from urllib.parse import urlsplit
 from html.parser import HTMLParser
 
 import requests
@@ -27,13 +27,10 @@ class LoginPage(HTMLParser):
         super().__init__()
         self.fields = {}
         self.csrf = None
-        self.scripts = []
         self.feed(html)
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
-        if tag == 'script' and attrs.get('src'):
-            self.scripts.append(attrs['src'])
         if tag == 'input' and attrs.get('type', '').lower() == 'hidden' and attrs.get('name'):
             self.fields[attrs['name']] = attrs.get('value', '')
         if tag == 'meta' and attrs.get('name') == 'csrf-token':
@@ -45,6 +42,12 @@ def load_config():
     parsed = urlsplit(url)
     if parsed.scheme not in ('http', 'https') or not parsed.hostname:
         raise ValueError('请在 Secrets.URL 中填写有效的网站地址')
+    cookies = os.environ.get('COOKIE', '').strip()
+    if cookies:
+        lines = cookies.splitlines()
+        if any('=' not in line for line in lines):
+            raise ValueError('Secrets.COOKIE 必须填写请求头 Cookie，每个账号一行')
+        return url, [('', cookie.strip()) for cookie in lines]
     lines = os.environ.get('CONFIG', '').strip().splitlines()
     if not lines or len(lines) % 2 or any(not line.strip() for line in lines):
         raise ValueError('Secrets.CONFIG 必须按一行账号、一行密码成对填写，不能有空行')
@@ -94,6 +97,28 @@ def notify(content):
         print(f'推送失败：{type(exc).__name__}')
 
 
+def check_in(session, url):
+    response = session.post(f'{url}/user/checkin', timeout=TIMEOUT)
+    response.raise_for_status()
+    result = response.json()
+    message = str(result.get('msg', ''))
+    success = response_ok(result) or already_checked_in(message)
+    content = '今日已签到' if already_checked_in(message) else ('签到成功' if success else '签到接口返回失败，请检查登录状态')
+    return success, content
+
+
+def sign_with_cookie(order, url, cookie):
+    try:
+        with requests.Session() as session:
+            session.headers.update({'Cookie': cookie, 'origin': url, 'referer': f'{url}/user'})
+            success, content = check_in(session, url)
+    except Exception as exc:
+        success, content = False, f'Cookie 签到失败：{type(exc).__name__}，请检查会话是否过期或网络是否正常'
+    print(f'账号 {order}：{content}')
+    notify(f'账号 {order}：{content}')
+    return success
+
+
 def sign(order, url, user, password):
     print(f'===账号 {order} 开始签到===')
     success = False
@@ -132,13 +157,7 @@ def sign(order, url, user, password):
                         message = message.replace(value, '[隐藏]')
                 print('登录接口提示：' + message.replace('\n', ' ').replace('\r', ' ')[:200])
                 raise RuntimeError('登录失败，请检查账号密码或验证码')
-            response = session.post(f'{url}/user/checkin', timeout=TIMEOUT)
-            response.raise_for_status()
-            result = response.json()
-            message = str(result.get('msg', ''))
-            success = response_ok(result) or already_checked_in(message)
-            # 不打印服务端原始内容，防止公开日志包含账号、令牌等信息。
-            content = '今日已签到' if already_checked_in(message) else ('签到成功' if success else '签到接口返回失败')
+            success, content = check_in(session, url)
     except Exception as exc:
         content = f'签到失败：{type(exc).__name__}'
     print(f'账号 {order}：{content}')
@@ -152,7 +171,8 @@ def main():
     except ValueError as exc:
         print(f'配置错误：{exc}')
         return 1
-    results = [sign(i, url, user, password)
+    use_cookie = bool(os.environ.get('COOKIE', '').strip())
+    results = [(sign_with_cookie(i, url, password) if use_cookie else sign(i, url, user, password))
                for i, (user, password) in enumerate(accounts, start=1)]
     print(f'签到完成：{sum(results)}/{len(results)} 个账号成功或今日已签到')
     return 0 if all(results) else 1

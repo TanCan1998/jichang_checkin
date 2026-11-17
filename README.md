@@ -15,7 +15,8 @@
 | 参数   | 是否必须  | 内容  | 
 | ------------ | ------------ | ------------ |
 | URL | 是 | 网站地址，如 `https://example.com` |
-| CONFIG| 是  | 账号密码  |
+| CONFIG| 账号密码登录时必填 | 账号密码，每行一个，交替填写 |
+| COOKIE | Cookie 登录时必填 | 浏览器手动登录后，请求头中的完整 Cookie；每个账号一行。设置后优先使用，CONFIG 可不填 |
 | SCKEY  | 否  | Sever酱秘钥  |
 <br/>
 <b>其中URL的值必须是机场网站的地址，例如：https://example.com</b>,尾部不要加''' / '''号 config写法：一行账号一行密码
@@ -34,3 +35,9 @@
 - GitHub 可能在公开仓库连续 60 天没有活动后停用定时工作流；届时需到 Actions 重新启用。
 
 本地验证：`python -m unittest discover -s tests -v`。
+
+### 当前验证码兼容性
+
+2026-11-17 实跑确认：当前网站密码登录需要验证码，GeekedTest 当前提交返回 `KeyError`，尚不能完成该站点的密码自动登录。可使用已登录的 Cookie 执行每日签到：浏览器手动登录网站，在开发者工具 Network 中选择网站请求，将 Request Headers 的 Cookie 值保存到本仓库 Actions Secret `COOKIE`，再手动运行工作流验证。不要将 Cookie 写入代码或公开日志。会话过期后需更新 Secret。
+
+脚本支持解码网站 Base64 登录页、初始化 Cookie 和隐藏字段，以及新版 `phase=password` 登录流程。自动签到是否成功，以 `Run sign` 中的结果为准。

@@ -65,4 +65,5 @@ jobs:
           URL: ${{ secrets.URL }}
           SCKEY: ${{ secrets.SCKEY }}
           CONFIG: ${{ secrets.CONFIG }}
+          COOKIE: ${{ secrets.COOKIE }}
         run: python main.py

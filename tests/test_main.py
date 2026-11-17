@@ -1,4 +1,5 @@
 import os
+import base64
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -7,6 +8,46 @@ import main
 
 
 class CheckinTests(unittest.TestCase):
+    def test_cookie_config_does_not_require_password(self):
+        with patch.dict(os.environ, {'URL': 'https://example.com', 'COOKIE': 'sid=one\nsid=two'}, clear=True):
+            self.assertEqual(main.load_config(), ('https://example.com', [('', 'sid=one'), ('', 'sid=two')]))
+
+    def test_cookie_mode_never_attempts_password_login(self):
+        with patch.dict(os.environ, {'URL': 'https://example.com', 'COOKIE': 'sid=one'}, clear=True), patch.object(main, 'sign_with_cookie', return_value=True) as sign, patch.object(main, 'sign') as password_sign:
+            self.assertEqual(main.main(), 0)
+            sign.assert_called_once_with(1, 'https://example.com', 'sid=one')
+            password_sign.assert_not_called()
+
+    def test_cookie_success_and_expired_session(self):
+        for result, expected in (({'ret': 1}, True), ({'ret': 0, 'msg': '未登录'}, False)):
+            with self.subTest(result=result):
+                session = MagicMock()
+                session.__enter__.return_value = session
+                session.post.return_value.json.return_value = result
+                with patch.object(main.requests, 'Session', return_value=session), patch.object(main, 'notify'):
+                    self.assertEqual(main.sign_with_cookie(1, 'https://example.com', 'sid=test'), expected)
+                    self.assertEqual(session.headers.update.call_args.args[0]['Cookie'], 'sid=test')
+                    self.assertEqual(session.post.call_args.args[0], 'https://example.com/user/checkin')
+
+    def test_base64_login_page_and_hidden_tokens(self):
+        html = '<input type="hidden" name="login_token" value="test"><meta name="csrf-token" content="csrf">'
+        encoded = base64.b64encode(html.encode()).decode()
+        form = main.LoginPage(main.decode_login_html(f'var originBody = "{encoded}";'))
+        self.assertEqual(form.fields, {'login_token': 'test'})
+        self.assertEqual(form.csrf, 'csrf')
+
+    def test_current_phased_login_payload(self):
+        session = MagicMock()
+        session.__enter__.return_value = session
+        session.get.return_value.text = 'function buildLoginRequest() {}'
+        session.post.side_effect = [MagicMock(json=lambda: {'ret': '1'}), MagicMock(json=lambda: {'ret': '1'})]
+        with patch.object(main.requests, 'Session', return_value=session), patch.object(main, 'notify'):
+            self.assertTrue(main.sign(1, 'https://example.com', 'a', 'p'))
+            data = session.post.call_args_list[0].kwargs['data']
+            self.assertEqual(data['phase'], 'password')
+            self.assertEqual(data['host'], 'example.com')
+            self.assertIsInstance(data['pageLoadedAt'], int)
+
     def test_invalid_config_fails_before_network(self):
         for env in ({}, {'URL': 'invalid'}, {'URL': 'https://example.com', 'CONFIG': 'one'}):
             with self.subTest(env=env), patch.dict(os.environ, env, clear=True):
