@@ -35,35 +35,11 @@ jobs:
           python -m pip check
       - name: Test check-in behavior
         run: python -m unittest discover -s tests -v
-      - name: Checkout pinned captcha solver
-        if: github.event_name != 'push'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: xKiian/GeekedTest
-          ref: d4e8e7562cfeab8319154a6af6538443cc47bfd9
-          path: vendor/GeekedTest
-          persist-credentials: false
-      - name: Prepare AI captcha solver
-        if: github.event_name != 'push'
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          path = Path('vendor/GeekedTest/geeked/sign.py')
-          code = path.read_text(encoding='utf-8')
-          # 本项目仅使用 AI 验证模式，避免加载未使用的图像模型依赖。
-          for module, name in [('slide', 'SlideSolver'), ('gobang', 'GobangSolver'), ('icon', 'IconSolver')]:
-              original = f'from geeked.{module} import {name}'
-              assert original in code, f'上游接口变更：{original}'
-              code = code.replace(original, f'{name} = None')
-          path.write_text(code, encoding='utf-8')
-          PY
       - name: Run sign
         if: github.event_name != 'push'
         env:
-          PYTHONPATH: vendor/GeekedTest
           PYTHONUNBUFFERED: '1'
           URL: ${{ secrets.URL }}
           SCKEY: ${{ secrets.SCKEY }}
-          CONFIG: ${{ secrets.CONFIG }}
           COOKIE: ${{ secrets.COOKIE }}
         run: python main.py
