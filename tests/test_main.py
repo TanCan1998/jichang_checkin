@@ -1,4 +1,5 @@
 import os
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -24,7 +25,10 @@ class CheckinTests(unittest.TestCase):
 
     def test_all_cookies_attempted_and_failure_propagated(self):
         with patch.object(main, 'load_config', return_value=('https://example.com', ['sid=one', 'sid=two'])), \
-                patch.object(main, 'sign_with_cookie', side_effect=[False, True]) as sign:
+                patch.object(main, 'sign_with_cookie', side_effect=[
+                    (False, main.extract_checkin_stats({}, '')),
+                    (True, main.extract_checkin_stats({}, '')),
+                ]) as sign, patch.object(main, 'report_summary', return_value=1):
             self.assertEqual(main.main(), 1)
             self.assertEqual(sign.call_count, 2)
 
@@ -39,16 +43,52 @@ class CheckinTests(unittest.TestCase):
                 session.__enter__.return_value = session
                 session.post.return_value.json.return_value = result
                 with patch.object(main, 'create_cookie_session', return_value=session), patch.object(main, 'notify'):
-                    self.assertEqual(main.sign_with_cookie(1, 'https://example.com', 'sid=test'), expected)
+                    self.assertEqual(main.sign_with_cookie(1, 'https://example.com', 'sid=test')[0], expected)
                     self.assertEqual(session.headers.update.call_args.args[0]['Cookie'], 'sid=test')
                     self.assertEqual(session.post.call_args.args[0], 'https://example.com/user/checkin')
+
+    def test_checkin_summary_extracts_reward_days_and_remaining_traffic(self):
+        result = {
+            'ret': 1,
+            'msg': '签到成功，获得 1 GB 流量',
+            'data': {
+                'checkin_days': 12,
+                'transfer_enable': 10 * 1024 ** 3,
+                'u': 2 * 1024 ** 3,
+                'd': 3 * 1024 ** 3,
+            },
+        }
+        stats = main.extract_checkin_stats(result, result['msg'])
+        self.assertEqual(stats, {
+            'checkin_days': 12,
+            'reward': 1024 ** 3,
+            'remaining': 5 * 1024 ** 3,
+            'quota': 10 * 1024 ** 3,
+        })
+
+    def test_run_summary_is_written_to_github_step_summary(self):
+        stats = {
+            'checkin_days': 12,
+            'reward': 1024 ** 2,
+            'remaining': 2 * 1024 ** 3,
+            'quota': 10 * 1024 ** 3,
+        }
+        with tempfile.NamedTemporaryFile(mode='r+', encoding='utf-8') as summary_file, \
+                patch.dict(os.environ, {'GITHUB_STEP_SUMMARY': summary_file.name}):
+            self.assertEqual(main.report_summary([(True, stats)]), 1)
+            summary_file.seek(0)
+            content = summary_file.read()
+        self.assertIn('1/1', content)
+        self.assertIn('12 天', content)
+        self.assertIn('1 MB', content)
+        self.assertIn('2 GB / 10 GB', content)
 
     def test_cookie_request_timeout_fails(self):
         session = MagicMock()
         session.__enter__.return_value = session
         session.post.side_effect = requests.Timeout()
         with patch.object(main, 'create_cookie_session', return_value=session), patch.object(main, 'notify'):
-            self.assertFalse(main.sign_with_cookie(1, 'https://example.com', 'sid=test'))
+            self.assertFalse(main.sign_with_cookie(1, 'https://example.com', 'sid=test')[0])
 
     def test_no_push_when_key_missing(self):
         with patch.dict(os.environ, {}, clear=True), patch.object(main.requests, 'post') as post:
