@@ -1,12 +1,22 @@
 import os
 import re
 import sys
+from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
 import requests
 
 TIMEOUT = 30
 TRAFFIC_UNITS = {'B': 1, 'KB': 1024, 'MB': 1024 ** 2, 'GB': 1024 ** 3, 'TB': 1024 ** 4}
+
+
+class PageTextParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.parts = []
+
+    def handle_data(self, data):
+        self.parts.append(data)
 
 
 def load_config():
@@ -77,7 +87,7 @@ def extract_checkin_stats(result, message):
         )
     if reward is None:
         match = re.search(
-            r'(?:获得|奖励|增加)\s*([\d,.]+\s*(?:B|KB|MB|GB|TB)?)',
+            r'(?:获得了?|奖励(?:为)?|增加了?)\s*([\d,.]+\s*(?:B|KB|MB|GB|TB)?)',
             message, re.IGNORECASE,
         )
         if match:
@@ -93,8 +103,15 @@ def extract_checkin_stats(result, message):
 
     checkin_days = find_value(result, (
         'checkin_days', 'checkinDays', 'total_checkin_days', 'totalCheckinDays',
-        'checkin_count', 'checkinCount',
+        'checkin_count', 'checkinCount', 'total_checkin_count', 'totalCheckinCount',
     ), parse_days)
+    if checkin_days is None:
+        match = re.search(
+            r'(?:累计签到|连续签到|已签到)\s*(\d+)\s*天',
+            message,
+        )
+        if match:
+            checkin_days = int(match.group(1))
     quota = find_value(result, (
         'transfer_enable', 'transferEnable', 'total_traffic', 'totalTraffic',
     ), parse_traffic)
@@ -112,6 +129,38 @@ def extract_checkin_stats(result, message):
         'remaining': remaining,
         'quota': quota,
     }
+
+
+def parse_account_page(html):
+    parser = PageTextParser()
+    parser.feed(html)
+    text = ' '.join(' '.join(parser.parts).split())
+
+    def labeled_traffic(label):
+        match = re.search(
+            rf'{label}\s*[:：]?\s*([\d,.]+\s*(?:B|KB|MB|GB|TB)?)',
+            text,
+            re.IGNORECASE,
+        )
+        return parse_traffic(match.group(1)) if match else None
+
+    past_usage = labeled_traffic(r'(?:过去用量|今日之前已使用|历史用量)')
+    today_usage = labeled_traffic(r'(?:今日用量|今天用量)')
+    remaining = labeled_traffic(r'(?:剩余流量|可用流量)')
+    quota = labeled_traffic(r'(?:总流量|流量总计|流量额度)')
+    if quota is None and remaining is not None and past_usage is not None and today_usage is not None:
+        quota = remaining + past_usage + today_usage
+    elif remaining is None and quota is not None:
+        total_used = labeled_traffic(r'(?:已用流量|当前用量)')
+        if total_used is not None:
+            remaining = max(0, quota - total_used)
+    return {'remaining': remaining, 'quota': quota}
+
+
+def fetch_account_traffic(session, url):
+    response = session.get(f'{url}/user', timeout=TIMEOUT)
+    response.raise_for_status()
+    return parse_account_page(response.text)
 
 
 def format_traffic(value):
@@ -161,13 +210,22 @@ def sign_with_cookie(order, url, cookie):
         with create_cookie_session() as session:
             session.headers.update({'Cookie': cookie, 'origin': url, 'referer': f'{url}/user'})
             success, content, stats = check_in(session, url)
+            try:
+                page_stats = fetch_account_traffic(session, url)
+                stats.update({key: value for key, value in page_stats.items() if value is not None})
+            except Exception as exc:
+                status = getattr(getattr(exc, 'response', None), 'status_code', None)
+                detail = f'HTTP {status}' if status else type(exc).__name__
+                print(f'账号 {order}：读取账户流量失败（{detail}）')
     except Exception as exc:
         status = getattr(getattr(exc, 'response', None), 'status_code', None)
         detail = f'HTTP {status}' if status else type(exc).__name__
         success, content = False, f'Cookie 签到失败：{detail}，请检查会话是否过期或网络是否正常'
         stats = extract_checkin_stats({}, '')
+    checkin_days = stats['checkin_days']
+    days_detail = f'{checkin_days} 天' if checkin_days is not None else '站点未提供'
     detail = (
-        f'累计签到 {stats["checkin_days"] if stats["checkin_days"] is not None else "未返回"} 天，'
+        f'累计签到 {days_detail}，'
         f'本次获得 {format_traffic(stats["reward"])}，'
         f'当前剩余 {format_traffic(stats["remaining"])}'
         + (f' / {format_traffic(stats["quota"])}' if stats['quota'] is not None else '')
@@ -188,12 +246,13 @@ def report_summary(results):
     for order, (success, stats) in enumerate(results, start=1):
         status = '已签到' if success else '失败'
         days = stats['checkin_days']
+        days_display = f'{days} 天' if days is not None else '站点未提供'
         remaining = format_traffic(stats['remaining'])
         if stats['quota'] is not None:
             remaining += f' / {format_traffic(stats["quota"])}'
         lines.append(
             f'| 账号 {order} | {status} | '
-            f'{days if days is not None else "未返回"} 天 | '
+            f'{days_display} | '
             f'{format_traffic(stats["reward"])} | {remaining} |'
         )
     report = '\n'.join(lines)
