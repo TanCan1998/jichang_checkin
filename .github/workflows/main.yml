@@ -43,3 +43,11 @@ jobs:
           SCKEY: ${{ secrets.SCKEY }}
           COOKIE: ${{ secrets.COOKIE }}
         run: python main.py
+      - name: Report skipped sign-in
+        if: always() && github.event_name == 'push'
+        run: |
+          {
+            echo '## 签到运行摘要'
+            echo
+            echo '签到未执行：本次为代码推送事件，仅运行测试。'
+          } >> "$GITHUB_STEP_SUMMARY"

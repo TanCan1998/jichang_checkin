@@ -2,7 +2,7 @@ import os
 import re
 import sys
 from html.parser import HTMLParser
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import requests
 
@@ -14,6 +14,12 @@ class PageTextParser(HTMLParser):
     def __init__(self):
         super().__init__()
         self.parts = []
+        self.subscription_url = None
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if attrs.get('id') == 'universal-sub-link':
+            self.subscription_url = attrs.get('value')
 
     def handle_data(self, data):
         self.parts.append(data)
@@ -144,23 +150,54 @@ def parse_account_page(html):
         )
         return parse_traffic(match.group(1)) if match else None
 
-    past_usage = labeled_traffic(r'(?:过去用量|今日之前已使用|历史用量)')
-    today_usage = labeled_traffic(r'(?:今日用量|今天用量)')
     remaining = labeled_traffic(r'(?:剩余流量|可用流量)')
     quota = labeled_traffic(r'(?:总流量|流量总计|流量额度)')
-    if quota is None and remaining is not None and past_usage is not None and today_usage is not None:
-        quota = remaining + past_usage + today_usage
-    elif remaining is None and quota is not None:
+    if remaining is None and quota is not None:
         total_used = labeled_traffic(r'(?:已用流量|当前用量)')
         if total_used is not None:
             remaining = max(0, quota - total_used)
-    return {'remaining': remaining, 'quota': quota}
+    return {
+        'remaining': remaining,
+        'quota': quota,
+        'subscription_url': parser.subscription_url,
+    }
+
+
+def parse_subscription_traffic(data):
+    if not isinstance(data, dict):
+        return {}
+    quota = parse_traffic(data.get('total_traffic'))
+    uploaded = parse_traffic(data.get('used_upload_traffic'))
+    downloaded = parse_traffic(data.get('used_download_traffic'))
+    if quota is None or uploaded is None or downloaded is None:
+        return {}
+    return {'quota': quota, 'remaining': max(0, quota - uploaded - downloaded)}
 
 
 def fetch_account_traffic(session, url):
     response = session.get(f'{url}/user', timeout=TIMEOUT)
     response.raise_for_status()
-    return parse_account_page(response.text)
+    stats = parse_account_page(response.text)
+    subscription_url = stats.pop('subscription_url')
+    if not subscription_url:
+        return stats
+
+    subscription_url = urljoin(url + '/', subscription_url)
+    site_origin = urlsplit(url)
+    subscription_origin = urlsplit(subscription_url)
+    if (
+        subscription_origin.scheme != site_origin.scheme
+        or subscription_origin.hostname != site_origin.hostname
+        or subscription_origin.port != site_origin.port
+    ):
+        return stats
+
+    response = session.get(
+        f'{subscription_url.rstrip("/")}/json', timeout=TIMEOUT,
+    )
+    response.raise_for_status()
+    stats.update(parse_subscription_traffic(response.json()))
+    return stats
 
 
 def format_traffic(value):
@@ -222,6 +259,7 @@ def sign_with_cookie(order, url, cookie):
         detail = f'HTTP {status}' if status else type(exc).__name__
         success, content = False, f'Cookie 签到失败：{detail}，请检查会话是否过期或网络是否正常'
         stats = extract_checkin_stats({}, '')
+    stats['status'] = content
     checkin_days = stats['checkin_days']
     days_detail = f'{checkin_days} 天' if checkin_days is not None else '站点未提供'
     detail = (
@@ -244,7 +282,7 @@ def report_summary(results):
         '| --- | --- | ---: | ---: | ---: |',
     ]
     for order, (success, stats) in enumerate(results, start=1):
-        status = '已签到' if success else '失败'
+        status = stats.get('status', '已签到' if success else '失败')
         days = stats['checkin_days']
         days_display = f'{days} 天' if days is not None else '站点未提供'
         remaining = format_traffic(stats['remaining'])
