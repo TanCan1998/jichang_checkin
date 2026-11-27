@@ -47,6 +47,19 @@ class CheckinTests(unittest.TestCase):
                     self.assertEqual(session.headers.update.call_args.args[0]['Cookie'], 'sid=test')
                     self.assertEqual(session.post.call_args.args[0], 'https://example.com/user/checkin')
 
+    def test_already_checked_in_is_identified_in_run_summary(self):
+        session = MagicMock()
+        session.__enter__.return_value = session
+        session.post.return_value.json.return_value = {
+            'ret': 0,
+            'msg': '您今天已经签到过了',
+        }
+        with patch.object(main, 'create_cookie_session', return_value=session), \
+                patch.object(main, 'notify'):
+            success, stats = main.sign_with_cookie(1, 'https://example.com', 'sid=test')
+        self.assertTrue(success)
+        self.assertEqual(stats['status'], '今日已签到')
+
     def test_checkin_summary_extracts_reward_days_and_remaining_traffic(self):
         result = {
             'ret': 1,
@@ -66,7 +79,7 @@ class CheckinTests(unittest.TestCase):
             'quota': 10 * 1024 ** 3,
         })
 
-    def test_account_page_extracts_real_traffic_usage_and_quota(self):
+    def test_account_page_does_not_infer_exact_quota_from_rounded_usage(self):
         html = '''
             <span>过去用量 1 GB</span>
             <span>今日用量 512 MB</span>
@@ -74,8 +87,47 @@ class CheckinTests(unittest.TestCase):
         '''
         self.assertEqual(main.parse_account_page(html), {
             'remaining': int(2.5 * 1024 ** 3),
-            'quota': int(4 * 1024 ** 3),
+            'quota': None,
+            'subscription_url': None,
         })
+
+    def test_subscription_json_provides_exact_quota_and_remaining(self):
+        response = MagicMock()
+        response.text = '''
+            <input id="universal-sub-link" value="https://example.com/sub/token">
+            <span>过去用量 1 GB</span>
+            <span>今日用量 512 MB</span>
+            <span>剩余流量 2.5 GB</span>
+        '''
+        subscription_response = MagicMock()
+        subscription_response.json.return_value = {
+            'total_traffic': 10 * 1024 ** 3,
+            'used_upload_traffic': 2 * 1024 ** 3,
+            'used_download_traffic': 3 * 1024 ** 3,
+        }
+        session = MagicMock()
+        session.get.side_effect = [response, subscription_response]
+
+        self.assertEqual(main.fetch_account_traffic(session, 'https://example.com'), {
+            'remaining': 5 * 1024 ** 3,
+            'quota': 10 * 1024 ** 3,
+        })
+        self.assertEqual(
+            session.get.call_args_list[1].args[0],
+            'https://example.com/sub/token/json',
+        )
+
+    def test_subscription_link_to_other_origin_is_never_requested(self):
+        response = MagicMock()
+        response.text = '<input id="universal-sub-link" value="https://other.example/sub/token">'
+        session = MagicMock()
+        session.get.return_value = response
+
+        self.assertEqual(main.fetch_account_traffic(session, 'https://example.com'), {
+            'remaining': None,
+            'quota': None,
+        })
+        session.get.assert_called_once_with('https://example.com/user', timeout=main.TIMEOUT)
 
     def test_checkin_message_parses_standard_sspanel_reward(self):
         stats = main.extract_checkin_stats(
@@ -91,19 +143,30 @@ class CheckinTests(unittest.TestCase):
             'ret': 1,
             'msg': '获得了 128MB 流量',
         }
-        session.get.return_value.text = '''
-            <span>过去用量 1 GB</span>
-            <span>今日用量 512 MB</span>
-            <span>剩余流量 2.5 GB</span>
-        '''
+        profile_response = MagicMock()
+        profile_response.text = '<input id="universal-sub-link" value="https://example.com/sub/token">'
+        subscription_response = MagicMock()
+        subscription_response.json.return_value = {
+            'total_traffic': 10 * 1024 ** 3,
+            'used_upload_traffic': 2 * 1024 ** 3,
+            'used_download_traffic': 3 * 1024 ** 3,
+        }
+        session.get.side_effect = [profile_response, subscription_response]
         with patch.object(main, 'create_cookie_session', return_value=session), \
                 patch.object(main, 'notify'):
             success, stats = main.sign_with_cookie(1, 'https://example.com', 'sid=test')
         self.assertTrue(success)
         self.assertEqual(stats['reward'], 128 * 1024 ** 2)
-        self.assertEqual(stats['remaining'], int(2.5 * 1024 ** 3))
-        self.assertEqual(stats['quota'], int(4 * 1024 ** 3))
-        session.get.assert_called_once_with('https://example.com/user', timeout=main.TIMEOUT)
+        self.assertEqual(stats['remaining'], 5 * 1024 ** 3)
+        self.assertEqual(stats['quota'], 10 * 1024 ** 3)
+        self.assertEqual(
+            session.get.call_args_list[0].args[0],
+            'https://example.com/user',
+        )
+        self.assertEqual(
+            session.get.call_args_list[1].args[0],
+            'https://example.com/sub/token/json',
+        )
 
     def test_run_summary_is_written_to_github_step_summary(self):
         stats = {
@@ -111,6 +174,7 @@ class CheckinTests(unittest.TestCase):
             'reward': 1024 ** 2,
             'remaining': 2 * 1024 ** 3,
             'quota': 10 * 1024 ** 3,
+            'status': '今日已签到',
         }
         with tempfile.NamedTemporaryFile(mode='r+', encoding='utf-8') as summary_file, \
                 patch.dict(os.environ, {'GITHUB_STEP_SUMMARY': summary_file.name}):
@@ -119,6 +183,7 @@ class CheckinTests(unittest.TestCase):
             content = summary_file.read()
         self.assertIn('1/1', content)
         self.assertIn('12 天', content)
+        self.assertIn('今日已签到', content)
         self.assertIn('1 MB', content)
         self.assertIn('2 GB / 10 GB', content)
 
